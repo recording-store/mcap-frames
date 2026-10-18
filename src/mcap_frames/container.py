@@ -23,6 +23,8 @@ from mcap.stream_reader import StreamReader
 from mcap_frames.errors import UnsupportedFile
 from mcap_frames.source import Source
 
+_SCAN_CHUNK_BATCH = 64                # chunks read together when locating messages without an index
+_WALK_BLOCK = 4 * 1024 * 1024       # read size when walking the file (see _ReadAhead)
 MAGIC = b"\x89MCAP0\r\n"
 FOOTER_SIZE = 1 + 8 + 8 + 8 + 4                 # opcode, record length, summary_start, summary_offset_start, crc
 MESSAGE_HEADER = 1 + 8 + 2 + 4 + 8 + 8          # opcode, record length, channel, sequence, log_time, publish_time
@@ -47,6 +49,7 @@ class Container:
         self.chunks: List[ChunkIndex] = []
         self.statistics: Optional[Statistics] = None
         self.recovered = False             # True: no usable summary (truncated file); chunks found by reading
+        self.unchunked_messages = 0        # messages written outside chunks (found by walking the file)
         self.ignored_tail_bytes = 0        # bytes at the end that did not form a complete record
         self._message_indexes: Dict[int, Dict[int, np.ndarray]] = {}
         self._chunk_cache: "OrderedDict[int, bytes]" = OrderedDict()
@@ -67,31 +70,45 @@ class Container:
                 self.chunks.append(rec)
             elif isinstance(rec, Statistics):
                 self.statistics = rec
-        if not self.chunks and (self.statistics is None or self.statistics.message_count):
-            raise UnsupportedFile(f"{source.name} has no chunk index; it cannot be read by index")
         self.chunks.sort(key=lambda c: c.chunk_start_offset)
+        in_chunks = None if self.statistics is None else self.statistics.message_count
+        if not self.chunks and (in_chunks is None or in_chunks):
+            # messages written outside chunks (ROS 2 'fastwrite'): no index at all, walk the data section once
+            self._walk_data_section(summary_start)
 
     def _recover(self) -> None:
-        """No summary (the recording was cut off, or written without one): walk the top-level records from the
-        start, keep every complete chunk, and locate messages by reading the chunks. Reads the whole file."""
-        src = self.source
-        buf_start, buf = 0, b""
+        """No summary (the recording was cut off, or written without one): walk the file from the start, keep
+        every complete chunk and every message written outside chunks, and drop the unfinished record at the end."""
+        if self.source.read(0, len(MAGIC)) != MAGIC:
+            raise UnsupportedFile(f"{self.source.name} is not an MCAP file")
+        pos, stopped = self._walk_data_section(self.source.size)
+        self.ignored_tail_bytes = 0 if stopped else self.source.size - pos
+        self.recovered = True
+        self._index_by_reading_chunks()
 
-        def get(offset: int, n: int) -> bytes:              # buffered: one read per ~1 MB of record headers
-            nonlocal buf_start, buf
-            if not (buf_start <= offset and offset + n <= buf_start + len(buf)):
-                buf_start = offset
-                buf = src.read(offset, min(max(n, 1 << 20), src.size - offset))
-            return buf[offset - buf_start:offset - buf_start + n]
+    def _walk_data_section(self, end: int) -> Tuple[int, bool]:
+        """Walk the top-level records from the start of the file up to ``end``. Collects chunks (as ChunkIndex),
+        schema and channel definitions, and messages written outside chunks (ROS 2 'fastwrite' and other
+        unchunked writers). Only record headers are needed: the bytes of large messages are skipped.
 
-        if get(0, len(MAGIC)) != MAGIC:
-            raise UnsupportedFile(f"{src.name} is not an MCAP file")
-        pos, op = len(MAGIC), None
-        while pos + 9 <= src.size:
+        Returns (position reached, whether a DataEnd / Footer record ended the walk)."""
+        reader = _ReadAhead(self.source)                    # walking reads (nearly) the whole file: read ahead
+        try:
+            return self._walk(reader.get, end)
+        finally:
+            reader.close()
+
+    def _walk(self, get, end: int) -> Tuple[int, bool]:
+
+        loose: Dict[int, List[Tuple[int, int]]] = {}          # channel -> [(log_time, file offset)] outside chunks
+        loose_ends: List[int] = []
+        pos = len(MAGIC)
+        while pos + 9 <= end:
             op, length = struct.unpack("<BQ", get(pos, 9))
-            end = pos + 9 + length
-            if end > src.size:
-                break                                     # the record the recorder was writing when it stopped
+            rec_end = pos + 9 + length
+            if rec_end > end:                               # the record the recorder was writing when it stopped
+                self._add_loose(loose, loose_ends)
+                return pos, False
             if op == OP_CHUNK:
                 start, stop, usize, _crc, clen = struct.unpack("<QQQII", get(pos + 9, 32))
                 compression = get(pos + 41, clen).decode()
@@ -99,14 +116,28 @@ class Container:
                 self.chunks.append(ChunkIndex(message_start_time=start, message_end_time=stop, chunk_start_offset=pos,
                                               chunk_length=9 + length, message_index_offsets={}, message_index_length=0,
                                               compression=compression, compressed_size=rlen, uncompressed_size=usize))
+            elif op == OP_MESSAGE:
+                channel, _seq, log_time = struct.unpack("<HIQ", get(pos + 9, 14))
+                loose.setdefault(channel, []).append((log_time, pos))
+                loose_ends.append(rec_end)
             elif op in (OP_SCHEMA, OP_CHANNEL):
                 self._definition(get(pos, 9 + length))
             elif op in (OP_DATA_END, OP_FOOTER):
-                break
-            pos = end
-        self.ignored_tail_bytes = src.size - pos if pos < src.size and op not in (OP_DATA_END, OP_FOOTER) else 0
-        self.recovered = True
-        self._index_by_reading_chunks()
+                self._add_loose(loose, loose_ends)
+                return pos, True
+            pos = rec_end
+        self._add_loose(loose, loose_ends)
+        return pos, False
+
+    def _add_loose(self, loose: Dict[int, List[Tuple[int, int]]], ends: List[int]) -> None:
+        """Messages outside chunks become one virtual, uncompressed chunk whose offsets are file offsets."""
+        if not loose:
+            return
+        k = len(self.chunks)
+        last = max(ends)
+        self.chunks.append(_LooseMessages(last))
+        self._message_indexes[k] = {ch: np.array(v, dtype=np.int64) for ch, v in loose.items()}
+        self.unchunked_messages = sum(len(v) for v in loose.values())
 
     def _definition(self, record: bytes) -> None:
         for rec in _records(record):
@@ -122,33 +153,39 @@ class Container:
         return any(c.message_index_offsets for c in self.chunks)
 
     def _index_by_reading_chunks(self) -> None:
-        """Fallback for files without MessageIndex records: read every chunk once and locate its messages."""
-        for k, c in enumerate(self.chunks):
-            if k in self._message_indexes:
-                continue
-            if c.compression:
-                data = _decompress(c.compression, self.source.read(self._records_start(k), c.compressed_size),
-                                   c.uncompressed_size)
-            else:
-                data = self.source.read(self._records_start(k), c.compressed_size)
-            per: Dict[int, List[Tuple[int, int]]] = {}
-            pos, n = 0, len(data)
-            while pos + 9 <= n:
-                op, length = data[pos], struct.unpack_from("<Q", data, pos + 1)[0]
-                if op in (OP_SCHEMA, OP_CHANNEL) and self.recovered:
-                    self._definition(data[pos:pos + 9 + length])     # definitions often live inside chunks
-                elif op == OP_MESSAGE:
-                    channel = struct.unpack_from("<H", data, pos + 9)[0]
-                    log_time = struct.unpack_from("<Q", data, pos + 9 + 2 + 4)[0]
-                    per.setdefault(channel, []).append((log_time, pos))
-                pos += 9 + length
-            self._message_indexes[k] = {ch: np.array(v, dtype=np.int64) for ch, v in per.items()}
+        """Fallback for files without MessageIndex records: read every chunk once and locate its messages.
+        Chunks are fetched in batches with the reads in flight together (one round trip per batch, not per chunk)."""
+        todo = [k for k in range(len(self.chunks)) if k not in self._message_indexes]
+        for b in range(0, len(todo), _SCAN_CHUNK_BATCH):
+            batch = todo[b:b + _SCAN_CHUNK_BATCH]
+            blobs = self.source.read_many([(self._records_start(k), self.chunks[k].compressed_size) for k in batch],
+                                          merge_gap=0)
+            for k, raw in zip(batch, blobs):
+                c = self.chunks[k]
+                self._index_chunk(k, _decompress(c.compression, raw, c.uncompressed_size) if c.compression else raw)
+
+    def _index_chunk(self, k: int, data: bytes) -> None:
+        """Locate the messages in one chunk's (decompressed) records; collect definitions when recovering."""
+        per: Dict[int, List[Tuple[int, int]]] = {}
+        pos, n = 0, len(data)
+        while pos + 9 <= n:
+            op, length = data[pos], struct.unpack_from("<Q", data, pos + 1)[0]
+            if op in (OP_SCHEMA, OP_CHANNEL) and self.recovered:
+                self._definition(data[pos:pos + 9 + length])     # definitions often live inside chunks
+            elif op == OP_MESSAGE:
+                channel = struct.unpack_from("<H", data, pos + 9)[0]
+                log_time = struct.unpack_from("<Q", data, pos + 9 + 2 + 4)[0]
+                per.setdefault(channel, []).append((log_time, pos))
+            pos += 9 + length
+        self._message_indexes[k] = {ch: np.array(v, dtype=np.int64) for ch, v in per.items()}
 
     def chunks_with(self, channel_id: int) -> List[int]:
         if self.recovered or not self.has_message_indexes:
             self._index_by_reading_chunks()
             return [k for k in range(len(self.chunks)) if channel_id in self._message_indexes[k]]
-        return [i for i, c in enumerate(self.chunks) if channel_id in c.message_index_offsets]
+        return [i for i, c in enumerate(self.chunks)
+                if channel_id in c.message_index_offsets
+                or (isinstance(c, _LooseMessages) and channel_id in self._message_indexes[i])]
 
     def message_indexes(self, chunk_ids: Sequence[int]) -> Dict[int, Dict[int, np.ndarray]]:
         """{chunk: {channel: array of (log_time, offset)}} for every channel in each chunk (one read per chunk)."""
@@ -175,12 +212,20 @@ class Container:
             nxt = np.searchsorted(starts, mine[:, 1], side="right")
             bounds = np.where(nxt < len(starts), starts[np.minimum(nxt, len(starts) - 1)], end)
             out.extend(MessageRef(k, int(o), int(b), int(t)) for (t, o), b in zip(mine, bounds))
-        out.sort(key=lambda r: (self.chunks[r.chunk].chunk_start_offset, r.offset))
+        out.sort(key=self._file_order)
         return out
+
+    def _file_order(self, r: MessageRef) -> Tuple[int, int]:
+        """Where a message sits in the file: (chunk start, offset in chunk), or (file offset, 0) outside chunks."""
+        if isinstance(self.chunks[r.chunk], _LooseMessages):
+            return r.offset, 0
+        return self.chunks[r.chunk].chunk_start_offset, r.offset
 
     # ------------------------------------------------------------------ message bytes
     def _records_start(self, k: int) -> int:
         c = self.chunks[k]
+        if isinstance(c, _LooseMessages):
+            return 0
         return c.chunk_start_offset + 1 + 8 + 8 + 8 + 8 + 4 + 4 + len(c.compression) + 8
 
     def _chunk_records(self, k: int) -> bytes:
@@ -234,6 +279,62 @@ class Container:
 
     def compression_of(self, refs: Sequence[MessageRef]) -> List[str]:
         return sorted({self.chunks[r.chunk].compression or "none" for r in refs})
+
+
+class _ReadAhead:
+    """Sequential reader for walking a file: large blocks, with the next blocks already requested.
+
+    The walk has to read almost every byte anyway (picture data sits between small records), and each record
+    tells where the next one starts, so reads cannot be issued in parallel by position. Fetching whole blocks
+    ahead of the parser keeps several requests in flight, which is what matters over HTTP."""
+
+    def __init__(self, source: Source, block: int = _WALK_BLOCK):
+        from concurrent.futures import ThreadPoolExecutor
+        self.source, self.block = source, block
+        self.ahead = max(1, source.concurrency)
+        self._pool = ThreadPoolExecutor(self.ahead, thread_name_prefix="mcap-frames-walk") if self.ahead > 1 else None
+        self._blocks: "OrderedDict[int, object]" = OrderedDict()
+
+    def _block(self, b: int) -> bytes:
+        for k in range(b, b + self.ahead):                  # request this block and the next ones
+            start = k * self.block
+            if k not in self._blocks and start < self.source.size:
+                size = min(self.block, self.source.size - start)
+                self._blocks[k] = (self._pool.submit(self.source.read, start, size) if self._pool
+                                   else self.source.read(start, size))
+        while len(self._blocks) > 2 * self.ahead + 2:
+            self._blocks.popitem(last=False)
+        got = self._blocks[b]
+        return got.result() if hasattr(got, "result") else got
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
+
+    def get(self, offset: int, n: int) -> bytes:
+        out = []
+        while n > 0:
+            b, inner = divmod(offset, self.block)
+            data = self._block(b)[inner:inner + n]
+            if not data:
+                break
+            out.append(data)
+            offset += len(data)
+            n -= len(data)
+        return b"".join(out)
+
+
+class _LooseMessages:
+    """Stands in for a chunk: the messages written outside chunks. Uncompressed; offsets are file offsets."""
+
+    compression = ""
+    message_index_offsets: Dict[int, int] = {}
+    message_index_length = 0
+    chunk_start_offset = 0
+
+    def __init__(self, end: int):
+        self.uncompressed_size = self.compressed_size = end
 
 
 def _records(blob: bytes):

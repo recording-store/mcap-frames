@@ -104,11 +104,15 @@ def check_stream(stream) -> TopicReport:
                      "unknown": int((s.decodable == scanmod.UNKNOWN).sum())}
     add = rep.issues.append
 
+    c = stream.container
+    if c.unchunked_messages:
+        add(Issue(INFO, "unchunked", f"{c.unchunked_messages} messages are written outside chunks (for example ROS 2 "
+                                     "'fastwrite'), with no index: the file was walked once to locate frames"))
     if stream.container.recovered:
         add(Issue(WARNING, "truncated", "the file has no summary (the recording was cut off): complete chunks were "
                                         f"recovered by reading the whole file; {stream.container.ignored_tail_bytes} "
                                         "bytes of an unfinished record at the end were ignored"))
-    elif not stream.container.has_message_indexes:
+    elif not stream.container.has_message_indexes and len(c.chunks) > (1 if c.unchunked_messages else 0):
         add(Issue(INFO, "no-message-index", "the file has no MessageIndex records: every chunk had to be read once "
                                             "to locate frames (random access is slow until then)"))
     if (d < 0).any():

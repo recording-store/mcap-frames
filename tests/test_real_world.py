@@ -104,3 +104,25 @@ def test_large_sei_before_picture_data(tmp_path, units, reference, compression):
         assert (s.decodable == 1).all()
         for f in v.frames([0, 31, 89]):
             assert md5(f.image) == reference[f.index]
+
+
+@pytest.mark.parametrize("cut", [None, 0.6])
+def test_unchunked_recording(tmp_path, units, reference, cut):
+    """Messages written straight into the data section, without chunks or indexes (ROS 2 'fastwrite'),
+    complete or cut off while recording."""
+    cams = [fx.Camera("/cam/a", units), fx.Camera("/cam/b", fx.encode_h264(30, gop=10))]
+    w = fx.write_recording(str(tmp_path / "r.mcap"), cams, compression="none", chunked=False)
+    path = w.path
+    if cut:
+        data = open(w.path, "rb").read()
+        path = str(tmp_path / "cut.mcap")
+        open(path, "wb").write(data[:int(len(data) * cut)])
+    with mf.open(path) as rec:
+        assert rec.video_topics == ["/cam/a", "/cam/b"]
+        v = rec.video("/cam/a")
+        n = len(v)
+        assert n == 90 if cut is None else 0 < n < 90
+        for f in v.frames(sorted({0, 31, n - 1})):
+            assert md5(f.image) == reference[f.index]
+    codes = {i.code for i in mf.check(path).topics["/cam/a"].issues}
+    assert "unchunked" in codes and ("truncated" in codes) == bool(cut)

@@ -50,6 +50,8 @@ mcap-frames mp4   episode.mcap --topic /camera/front --start-index 300 --end-ind
 | `starts-mid-gop` | warning | the first frames come before the first keyframe |
 | `timestamp-gap` | warning | intervals longer than 1.5× the median (frames skipped by the camera) |
 | `params-not-repeated` | info | keyframes rely on parameter sets sent earlier |
+| `truncated` | warning | the recording was cut off; complete chunks and messages were recovered |
+| `no-message-index`, `unchunked` | info | the file had to be read once when opened to locate frames |
 | `irregular-gop` | info | keyframe interval varies (often scene-cut keyframes; harmless) |
 | `decodability-unknown` | info | cannot be inferred (H.265, or H.264 streams that allow frame_num gaps) |
 
@@ -61,8 +63,12 @@ Which H.264 frames can be decoded is inferred from `frame_num` in the slice head
 `foxglove_msgs/msg/CompressedImage`, `sensor_msgs/msg/CompressedImage` (ROS 2). H.264 and H.265 video, JPEG /
 PNG / WebP images. Chunks may be uncompressed, zstd or lz4.
 
-Files without `MessageIndex` records, and recordings that were cut off (no summary), are read chunk by chunk;
-a truncated file is recovered from its complete chunks.
+Files without the usual indexes are read once when opened, then accessed like any other file:
+
+- no `MessageIndex` records: chunks are read to locate the messages;
+- messages written outside chunks (for example ROS 2's `fastwrite` preset): the file is walked once;
+- recordings that were cut off (no summary): complete chunks and messages are recovered, the unfinished record
+  at the end is dropped.
 
 ## Status and limitations
 

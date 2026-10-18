@@ -176,7 +176,8 @@ class Written:
 
 
 def write_recording(path: str, cameras: Sequence[Camera], compression: str = "zstd", chunk_size: int = 64 * 1024,
-                    with_state_topic: bool = True, message_index: bool = True) -> Written:
+                    with_state_topic: bool = True, message_index: bool = True, chunked: bool = True) -> Written:
+    """``chunked=False`` writes messages straight into the data section, like ROS 2's ``fastwrite`` preset."""
     events = []                                      # (write position, log_time, topic, sequence, unit)
     for c in cameras:
         times = c.times_ns or [T0 + u.number * 1_000_000_000 // FPS for u in c.units]
@@ -197,7 +198,7 @@ def write_recording(path: str, cameras: Sequence[Camera], compression: str = "zs
         index_types = IndexType.CHUNK | IndexType.ATTACHMENT | IndexType.METADATA
         if message_index:
             index_types |= IndexType.MESSAGE
-        w = Writer(f, chunk_size=chunk_size, compression=comp, index_types=index_types)
+        w = Writer(f, chunk_size=chunk_size, compression=comp, index_types=index_types, use_chunking=chunked)
         w.start(profile="", library="mcap-frames tests")
         ids = {}
         for c in cameras:
