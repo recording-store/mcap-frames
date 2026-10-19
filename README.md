@@ -88,11 +88,25 @@ Files without the usual indexes are read once when opened, then accessed like an
 - recordings that were cut off (no summary): complete chunks and messages are recovered, the unfinished record
   at the end is dropped.
 
+## Verifying it yourself
+
+`verify/verify.py` decodes every message of a topic in order, tagging each packet with its message number, so
+every picture a decoder puts out can be traced to its message even when the decoder drops or conceals frames. It
+then checks that every frame mcap-frames says can be decoded is pixel-identical to that picture, and that every
+frame it says cannot be decoded raises an error. It also counts the frames a reader that numbers frames by
+counting decoded pictures would get wrong.
+
+```bash
+pip install -e ".[decode]"
+python verify/verify.py synthetic                 # recordings with known damage, ~5 s
+huggingface-cli download Voxel51/ABC-130k --repo-type dataset --include "data/**" --local-dir abc130k
+python verify/verify.py dataset abc130k/data      # 40 episodes, 3.4 GB, ~15 min; --all checks every frame
+```
+
 ## Status and limitations
 
-0.1 development version; the API may still change. Verified against sequential decoding (pixel-identical) on
-synthetic streams, including damaged ones, and on recordings from the public
-[ABC-130k](https://huggingface.co/datasets/Voxel51/ABC-130k) subset.
+0.1 development version; the API may still change. Verified with `verify/verify.py` on synthetic streams,
+including damaged ones, and on the public [ABC-130k](https://huggingface.co/datasets/Voxel51/ABC-130k) subset.
 
 - Missing references are inferred for H.264 only. For H.265, and for H.264 streams that allow `frame_num`
   gaps, a damaged frame is only detected when the decoder drops it; a decoder that conceals the damage
