@@ -19,7 +19,7 @@ def _require(module: str):
         raise ImportError(f"decoding needs {module}: pip install 'mcap-frames[decode]'") from e
 
 
-def packet(av, data) -> "av.Packet":
+def packet(av, data):
     """A packet FFmpeg can safely read.
 
     FFmpeg's bitstream readers may read up to AV_INPUT_BUFFER_PADDING_SIZE (64) bytes past the end of the input,

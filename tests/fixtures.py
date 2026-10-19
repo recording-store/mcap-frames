@@ -12,7 +12,7 @@ import re
 import struct
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import av
 import numpy as np

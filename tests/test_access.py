@@ -3,7 +3,6 @@ import http.server
 import os
 import threading
 
-import numpy as np
 import pytest
 
 import mcap_frames as mf
@@ -173,7 +172,7 @@ class _RangeHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def test_http_source(tmp_path, clean_units, reference):
-    w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", clean_units)], compression="none")
+    fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", clean_units)], compression="none")
     handler = lambda *a, **k: _RangeHandler(*a, directory=str(tmp_path), **k)  # noqa: E731
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
