@@ -120,7 +120,7 @@ def check_stream(stream) -> TopicReport:
         return rep
     try:
         rep.codec = stream.codec
-        s = stream.scan()
+        s = stream._scanned()
     except McapFramesError as e:
         rep.issues.append(Issue(ERROR, "unreadable", str(e)))
         return rep
@@ -132,15 +132,15 @@ def check_stream(stream) -> TopicReport:
                      "unknown": int((s.decodable == scanmod.UNKNOWN).sum())}
     add = rep.issues.append
 
-    c = stream.container
+    c = stream._container
     if c.unchunked_messages:
         add(Issue(INFO, "unchunked", f"{c.unchunked_messages} messages are written outside chunks (for example ROS 2 "
                                      "'fastwrite'), with no index: the file was walked once to locate frames"))
-    if stream.container.recovered:
+    if c.recovered:
         add(Issue(WARNING, "truncated", "the file has no summary (the recording was cut off): complete chunks were "
-                                        f"recovered by reading the whole file; {stream.container.ignored_tail_bytes} "
+                                        f"recovered by reading the whole file; {c.ignored_tail_bytes} "
                                         "bytes of an unfinished record at the end were ignored"))
-    elif not stream.container.has_message_indexes and len(c.chunks) > (1 if c.unchunked_messages else 0):
+    elif not c.has_message_indexes and len(c.chunks) > (1 if c.unchunked_messages else 0):
         add(Issue(INFO, "no-message-index", "the file has no MessageIndex records: every chunk had to be read once "
                                             "to locate frames (random access is slow until then)"))
     if (d < 0).any():
@@ -343,13 +343,13 @@ def _verify(stream) -> Issue:
     ctx = av.CodecContext.create({"h264": "h264", "h265": "hevc"}[stream.codec], "r")
     pictures = 0
     for start in range(0, len(stream), 256):
-        for p in stream.payloads(range(start, min(start + 256, len(stream)))):
+        for p in stream._payloads(range(start, min(start + 256, len(stream)))):
             try:
                 pictures += len(ctx.decode(packet(av, p.data)))
             except av.error.InvalidDataError:
                 pass
     pictures += len(ctx.decode(None))
-    s = stream.scan()
+    s = stream._scanned()
     return Issue(INFO, "verify-decode",
                  f"sequential decode produced {pictures} pictures for {len(stream)} messages; "
                  f"{int((s.decodable != scanmod.NOT_DECODABLE).sum())} frames were inferred decodable")

@@ -29,7 +29,7 @@ def test_file_without_message_indexes(tmp_path, units, reference, compression):
     cams = [fx.Camera("/cam/a", units), fx.Camera("/cam/b", fx.encode_h264(30, gop=10))]
     w = fx.write_recording(str(tmp_path / "r.mcap"), cams, compression=compression, message_index=False)
     with mf.open(w.path) as rec:
-        assert not rec.container.has_message_indexes
+        assert not rec._container.has_message_indexes
         assert rec.video_topics == ["/cam/a", "/cam/b"]
         assert [len(rec.video(t)) for t in rec.video_topics] == [90, 30]
         for f in rec.video("/cam/a").frames([0, 29, 31, 89]):
@@ -74,7 +74,7 @@ def test_truncated_recording(tmp_path, units, reference, keep, compression):
     cut = tmp_path / "cut.mcap"
     cut.write_bytes(data[:int(len(data) * keep)])
     with mf.open(str(cut)) as rec:
-        assert rec.container.recovered and rec.container.ignored_tail_bytes > 0
+        assert rec._container.recovered and rec._container.ignored_tail_bytes > 0
         v = rec.video("/cam")
         assert 0 < len(v) <= len(units)
         with mf.open(w.path) as full:
@@ -99,9 +99,8 @@ def test_large_sei_before_picture_data(tmp_path, units, reference, compression):
     w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", big)], compression=compression)
     with mf.open(w.path) as rec:
         v = rec.video("/cam")
-        s = v.scan()
-        assert list(s.keyframe.nonzero()[0]) == [0, 30, 60]
-        assert (s.decodable == 1).all()
+        assert list(v.keyframes) == [0, 30, 60]
+        assert all(v.decodable(n) for n in range(len(v)))
         for f in v.frames([0, 31, 89]):
             assert md5(f.image) == reference[f.index]
 

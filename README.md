@@ -23,8 +23,12 @@ v = rec.video("/camera/front")
 
 f = v.frame(120)                              # f.image: RGB array; f.log_time_ns, f.stamp_ns, f.decoded_from
 frames = v.frames([10, 500, 900])             # frames sharing a keyframe are decoded once
+for f in v.iter_frames(range(len(v)), on_error="skip"):   # streamed; undecodable frames left out
+    ...
 run = v.encoded(120)                          # raw access units from the keyframe, for your own decoder
 n = v.index_at(time_ns, mode="nearest")       # log_time → frame number
+n = v.index_at(time_ns, clock="capture")      # by the capture timestamp carried in the messages
+v.keyframes, v.stamps_ns, v.decodable(600)    # need one pass over the headers (rec.scan() does all topics)
 
 report = mf.check("episode.mcap")             # health check
 print(report.summary())
@@ -99,6 +103,10 @@ synthetic streams, including damaged ones, and on recordings from the public
   follow redirects. Authentication is limited to presigned URLs or headers you pass in; proxies from the
   environment are not used. Tested against an S3-compatible object store with presigned GET URLs.
 - Indexes live in memory only; they are rebuilt each time a file is opened.
+- `frames()` keeps every picture in memory; `iter_frames()` keeps about `workers` runs (keyframe to frame)
+  of pictures, so lower `workers` to use less memory.
+- Pictures come back as RGB at full size; convert or resize them yourself.
+- A `Recording` and its streams are not thread-safe: open the file once per thread.
 - Interlaced (field-coded) H.264 has not been tested.
 
 ## Development

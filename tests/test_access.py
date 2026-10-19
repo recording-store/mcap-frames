@@ -77,8 +77,7 @@ def test_missing_keyframe_is_reported_not_shifted(tmp_path, clean_units, referen
         for f in v.frames([39, 49, 50, 100, 118]):
             assert fx.read_number(f.image) == numbers[f.index]
             assert md5(f.image) == reference[numbers[f.index]]
-        s = v.scan()
-        assert [(a, b) for a, b in s.runs(0)] == [(40, 48)]
+        assert [n for n in range(len(v)) if v.decodable(n) is False] == list(range(40, 49))
         assert v.decodable(45) is False and v.decodable(60) is True
         # the same answers once the scan is available
         with pytest.raises(mf.FrameNotDecodable):
@@ -195,4 +194,4 @@ def test_requests_larger_than_the_payload_cache(tmp_path, monkeypatch, clean_uni
         v = rec.video("/cam")
         for f in v.frames([3, 19, 58, 59, 119]):
             assert md5(f.image) == reference[f.index]
-        assert len(v.payloads(range(0, 40))) == 40
+        assert len(v._payloads(range(0, 40))) == 40

@@ -15,7 +15,7 @@ from mcap_frames.video import VideoStream, scan_streams
 class Recording:
     def __init__(self, src: Union[str, os.PathLike, BinaryIO, Source]):
         self.source = open_source(src)
-        self.container = Container(self.source)
+        self._container = Container(self.source)
         self._streams: Dict[str, VideoStream] = {}
 
     @property
@@ -30,32 +30,34 @@ class Recording:
     @property
     def video_topics(self) -> List[str]:
         """Image / video topics with a supported message type that have at least one message."""
-        counts = self.container.statistics.channel_message_counts if self.container.statistics else None
+        counts = self._container.statistics.channel_message_counts if self._container.statistics else None
         out = []
-        for ch in self.container.channels.values():
-            if extractor_for(self.container.schemas.get(ch.schema_id), ch) is None:
+        for ch in self._container.channels.values():
+            if extractor_for(self._container.schemas.get(ch.schema_id), ch) is None:
                 continue
-            has = counts.get(ch.id, 0) > 0 if counts is not None else bool(self.container.chunks_with(ch.id))
+            has = counts.get(ch.id, 0) > 0 if counts is not None else bool(self._container.chunks_with(ch.id))
             if has:
                 out.append(ch.topic)
         return sorted(out)
 
     def video(self, topic: str) -> VideoStream:
         if topic not in self._streams:
-            channels = [c for c in self.container.channels.values() if c.topic == topic]
+            channels = [c for c in self._container.channels.values() if c.topic == topic]
             if not channels:
                 raise TopicNotFound(f"no topic {topic!r} in {self.name}")
             ch = channels[0]
-            schema = self.container.schemas.get(ch.schema_id)
+            schema = self._container.schemas.get(ch.schema_id)
             extract = extractor_for(schema, ch)
             if extract is None:
                 raise TopicNotFound(f"{topic!r} is {schema.name if schema else 'schemaless'!r} "
                                     f"({ch.message_encoding}), not a supported image / video message")
-            self._streams[topic] = VideoStream(self.container, ch, schema, extract)
+            self._streams[topic] = VideoStream(self._container, ch, schema, extract)
         return self._streams[topic]
 
     def scan(self, topics=None) -> None:
-        """Scan the headers of several topics in one pass over the file (each chunk read once)."""
+        """Read the headers of every frame of several topics (all by default) in one pass over the file, each
+        chunk read once. Optional: decodable(), keyframes, stamps_ns and health checks scan on first use, but
+        one topic at a time."""
         scan_streams([self.video(t) for t in (topics or self.video_topics)])
 
     def close(self) -> None:

@@ -103,7 +103,7 @@ def main() -> int:
 
     # 4. frames
     try:
-        usable = np.flatnonzero(v.scan().decodable == 1)
+        usable = np.array([n for n in range(len(v)) if v.decodable(n)])
     except mf.McapFramesError:
         usable = np.arange(len(v))
     rng = np.random.default_rng(1)

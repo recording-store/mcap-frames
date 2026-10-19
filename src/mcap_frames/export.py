@@ -63,7 +63,7 @@ def to_mp4(stream, output, start_index: Optional[int] = None, end_index: Optiona
 
     if stream.codec not in VIDEO_CODECS:
         raise UnsupportedStream(f"{stream.topic}: {stream.codec} frames cannot be put in an MP4 without re-encoding")
-    s = stream.scan()
+    s = stream._scanned()
     if s.b_frames:
         raise UnsupportedStream(f"{stream.topic} has B-frames")
     n = len(stream)
@@ -88,7 +88,7 @@ def to_mp4(stream, output, start_index: Optional[int] = None, end_index: Optiona
         vs.time_base = tb
         for i0 in range(start, end + 1, 256):
             idx = list(range(i0, min(i0 + 256, end + 1)))
-            for i, p in zip(idx, stream.payloads(idx)):
+            for i, p in zip(idx, stream._payloads(idx)):
                 pkt = packet(av, first.units[0] if i == start else p.data)
                 pkt.stream = vs
                 pkt.time_base = tb
