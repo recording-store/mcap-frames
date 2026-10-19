@@ -136,11 +136,11 @@ def test_jpeg_stream(tmp_path):
         assert v.encoded(4).units == [units[4].data]
 
 
-def test_timestamp_gap_warning(tmp_path, clean_units):
+def test_frames_skipped_warning(tmp_path, clean_units):
     times = [fx.T0 + i * 33_333_333 + (33_333_333 if i >= 60 else 0) for i in range(N)]
     w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", clean_units, times_ns=times)])
     rep = mf.check(w.path)
-    gap = {i.code: i for i in rep.topics["/cam"].issues}["timestamp-gap"]
+    gap = {i.code: i for i in rep.topics["/cam"].issues}["frames-skipped"]
     assert gap.level == "warning" and gap.frames == [(59, 60)]
 
 

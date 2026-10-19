@@ -167,6 +167,7 @@ class Camera:
                                       # no timestamp) or "ros2" (sensor_msgs CompressedImage)
     fmt: str = "h264"
     times_ns: Optional[List[int]] = None   # log_time per unit; default from the frame number
+    stamps_ns: Optional[List[int]] = None  # capture timestamp per unit (in the message); default: the log_time
 
 
 @dataclass
@@ -221,9 +222,10 @@ def write_recording(path: str, cameras: Sequence[Camera], compression: str = "zs
                 w.add_message(state_id, log_time=t, publish_time=t, data=u, sequence=0)
                 continue
             cid, c = ids[topic]
-            data = (pb_compressed_video(t, u.data, c.fmt) if c.kind == "protobuf"
+            stamp = c.stamps_ns[seq] if c.stamps_ns else t
+            data = (pb_compressed_video(stamp, u.data, c.fmt) if c.kind == "protobuf"
                     else pb_compressed_image(None, u.data, c.fmt) if c.kind == "pb_image"
-                    else cdr_compressed_image(t, u.data, c.fmt))
+                    else cdr_compressed_image(stamp, u.data, c.fmt))
             w.add_message(cid, log_time=t, publish_time=t, data=data, sequence=seq)
         w.finish()
     return out

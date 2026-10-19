@@ -8,7 +8,7 @@ up to the next keyframe is decoded against the wrong reference.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from mcap_frames.codecs.annexb import BitReader, iter_nal_units, rbsp
 
@@ -199,12 +199,14 @@ class FrameNumTracker:
     """Follows frame_num through a run of access units starting at a keyframe.
 
     ``step`` returns True while every picture's references are present, False after a gap, and None when the
-    stream allows gaps (gaps_in_frame_num_allowed) so a gap does not prove anything.
+    stream allows gaps (gaps_in_frame_num_allowed) so a gap does not prove anything. ``gap`` is set on the step
+    that found one: (expected frame_num, frame_num found, max_frame_num).
     """
 
     def __init__(self) -> None:
         self.expect: Optional[int] = None
         self.state: Optional[bool] = None
+        self.gap: Optional[Tuple[int, int, int]] = None
 
     def start(self, unit: H264Unit) -> Optional[bool]:
         self.state = True if unit.frame_num is not None else None
@@ -212,6 +214,7 @@ class FrameNumTracker:
         return self.state
 
     def step(self, unit: H264Unit) -> Optional[bool]:
+        self.gap = None
         if unit.keyframe:
             return self.start(unit)
         if self.state is True:
@@ -219,6 +222,8 @@ class FrameNumTracker:
                 self.state = None
             elif unit.frame_num != self.expect:
                 self.state = None if unit.gaps_allowed else False
+                if self.state is False and unit.max_frame_num:
+                    self.gap = (self.expect, unit.frame_num, unit.max_frame_num)
         self._advance(unit)
         return self.state
 

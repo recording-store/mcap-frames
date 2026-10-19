@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -23,6 +23,8 @@ class ScanResult:
     stamp_ns: np.ndarray              # int64, -1 where the message has no timestamp of its own
     gaps_allowed: Optional[bool]      # H.264 gaps_in_frame_num_allowed_flag
     params_first_seen: Optional[int]  # first frame that carried parameter sets
+    reference_gaps: List[Tuple[int, int, int, int]] = field(default_factory=list)
+    # H.264: (frame, expected frame_num, frame_num found, max_frame_num) where references go missing
 
     def __len__(self) -> int:
         return len(self.keyframe)
@@ -50,6 +52,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
     b_frames = 0
     gaps_allowed: Optional[bool] = None
     first_params: Optional[int] = None
+    ref_gaps: List[Tuple[int, int, int, int]] = []
 
     if codec == "h264":
         state, tracker, started = h264.H264State(), h264.FrameNumTracker(), False
@@ -78,6 +81,8 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
                 continue
             else:
                 r = tracker.step(u)
+                if tracker.gap is not None:
+                    ref_gaps.append((i, *tracker.gap))
             decodable[i] = DECODABLE if r is True else (UNKNOWN if r is None else NOT_DECODABLE)
     elif codec == "h265":
         state5, started = h265.H265State(), False
@@ -104,4 +109,5 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
             ok = bool(p.data)
             keyframe[i] = carries[i] = ok
             decodable[i] = DECODABLE if ok else NOT_DECODABLE
-    return ScanResult(codec, keyframe, carries, decodable, b_frames, stamps, gaps_allowed, first_params)
+    return ScanResult(codec, keyframe, carries, decodable, b_frames, stamps, gaps_allowed, first_params,
+                      ref_gaps)

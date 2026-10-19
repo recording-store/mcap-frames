@@ -42,21 +42,34 @@ mcap-frames mp4   episode.mcap --topic /camera/front --start-index 300 --end-ind
 
 ## What the health check reports
 
-| code | level | meaning |
-|---|---|---|
-| `missing-reference` | error | frames after the first keyframe depend on a missing frame; tools that count decoded pictures shift after them |
-| `b-frames` | error | message order differs from picture order, so frames cannot be addressed by number |
-| `no-keyframe`, `params-missing` | error | nothing can be decoded |
-| `timestamp-backwards` | error | log_time goes backwards |
-| `starts-mid-gop` | warning | the first frames come before the first keyframe |
-| `timestamp-gap` | warning | intervals longer than 1.5× the median (frames skipped by the camera) |
-| `params-not-repeated` | info | keyframes rely on parameter sets sent earlier |
-| `truncated` | warning | the recording was cut off; complete chunks and messages were recovered |
-| `no-message-index`, `unchunked` | info | the file had to be read once when opened to locate frames |
-| `irregular-gop` | info | keyframe interval varies (often scene-cut keyframes; harmless) |
-| `decodability-unknown` | info | cannot be inferred (H.265, or H.264 streams that allow frame_num gaps) |
+Each issue says what it is based on (`evidence`) and whether it is `inferred`. Most are facts read from the
+bitstream or the file. The timing issues are conclusions about what happened while recording, drawn from
+timestamps: they are only as right as the timestamps, so they come with how regular the timestamps are.
 
-Which H.264 frames can be decoded is inferred from `frame_num` in the slice headers, without decoding.
+| code | level | based on | meaning |
+|---|---|---|---|
+| `missing-reference` | error | frame_num | frames after the first keyframe depend on a missing frame; tools that count decoded pictures shift after them. For H.264 it also says what went missing (reference frames, or a keyframe) |
+| `b-frames` | error | slice headers | message order differs from picture order, so frames cannot be addressed by number |
+| `no-keyframe`, `params-missing` | error | NAL units | nothing can be decoded |
+| `timestamp-backwards` | error | log_time | log_time goes backwards |
+| `starts-mid-gop` | warning | NAL units | the first frames come before the first keyframe |
+| `frames-skipped` | warning | timestamps, **inferred** | whole frames are missing from the timeline (skipped by the camera, or lost before reaching the file): frame numbers are fine, but time and frame number no longer advance together |
+| `timestamp-not-increasing` | warning | capture timestamps | capture timestamps repeat or go backwards |
+| `truncated` | warning | file structure | the recording was cut off; complete chunks and messages were recovered |
+| `params-not-repeated` | info | NAL units | keyframes rely on parameter sets sent earlier |
+| `no-message-index`, `unchunked` | info | file structure | the file had to be read once when opened to locate frames |
+| `timestamp-jitter` | info | timestamps, **inferred** | long intervals that nearby frames make up (frames stamped late or early); no frame is missing |
+| `timing-irregular` | info | timestamps | frames arrive in bursts, so timestamps cannot show skipped frames |
+| `irregular-gop` | info | NAL units | keyframe interval varies (scene-cut keyframes, or keyframes that were lost) |
+| `decodability-unknown` | info | slice headers | cannot be inferred (H.265, or H.264 streams that allow frame_num gaps) |
+
+Which H.264 frames can be decoded is worked out from `frame_num` in the slice headers, without decoding.
+
+Timing is checked on the capture timestamp carried in each message when every frame has one, otherwise on
+log_time. Frames are compared with a fixed-rate grid whose period is measured over the whole topic: a missing
+frame shifts all later frames by a whole period, while a late or early frame is off the grid on its own. A shift
+of about half a period is a clock slip, not a missing frame. When most intervals are far from the period (frames
+delivered in bursts), timing is not analysed.
 
 ## Supported messages
 
