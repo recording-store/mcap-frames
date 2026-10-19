@@ -17,6 +17,7 @@ pip install "mcap-frames[decode]"     # [decode] adds PyAV and Pillow; indexing 
 import mcap_frames as mf
 
 rec = mf.open("episode.mcap")                 # or an http(s) URL that supports range requests
+# rec = mf.open(mf.HttpSource(url, headers={...}, read_timeout=30, retries=3))
 print(rec.video_topics)
 v = rec.video("/camera/front")
 
@@ -81,7 +82,9 @@ synthetic streams, including damaged ones, and on recordings from the public
   returns a picture.
 - Streams with B-frames are refused (message order differs from picture order).
 - When a topic has several channels, only the first one is used.
-- HTTP sources are experimental: no connection reuse, retries or authentication yet.
+- HTTP sources reuse connections, retry transient failures (connection errors, timeouts, 408 / 429 / 5xx) and
+  follow redirects. Authentication is limited to presigned URLs or headers you pass in; proxies from the
+  environment are not used. Tested against an S3-compatible object store with presigned GET URLs.
 - Indexes live in memory only; they are rebuilt each time a file is opened.
 - Interlaced (field-coded) H.264 has not been tested.
 

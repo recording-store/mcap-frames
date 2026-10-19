@@ -11,7 +11,6 @@ from __future__ import annotations
 import io
 import os
 import threading
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import BinaryIO, Iterable, List, Optional, Sequence, Tuple, Union
@@ -135,34 +134,155 @@ class FileSource(Source):
             self._fh.close()
 
 
+class _NotRetried(IOError):
+    """A failure that retrying cannot fix."""
+
+
 class HttpSource(Source):
-    """An http(s) URL that supports range requests (object storage, presigned URLs, static file servers)."""
+    """An http(s) URL that supports range requests (object storage, presigned URLs, static file servers).
+
+    - Each reading thread keeps one persistent connection per host and reuses it.
+    - The size comes from a one-byte range GET, not HEAD: presigned URLs are signed for one method.
+    - Connection errors, timeouts, 408 / 429 and 5xx answers are retried with exponential backoff; other
+      answers (404, 403 ...) fail at once. Redirects are followed.
+    - A server that answers a range request with the whole file is refused (the body is not downloaded).
+    - Authorization and Cookie headers are not sent on to another host when a redirect leaves the original one.
+    Proxies from the environment are not used."""
 
     # Measured with 10 ms latency and 50 MB/s per connection: with 16 requests in flight a round trip costs
-    # less than reading 64 KB more, and larger gaps end up reading whole files (see benchmarks).
+    # less than reading 64 KB more, and larger gaps end up reading whole files.
     merge_gap = 64 * 1024
     concurrency = 16
+    _RETRY_STATUS = {408, 429}
 
-    def __init__(self, url: str, headers: dict | None = None, timeout: float = 30.0):
+    def __init__(self, url: str, headers: dict | None = None, connect_timeout: float = 10.0,
+                 read_timeout: float = 30.0, retries: int = 3, backoff: float = 0.2, max_redirects: int = 5):
         super().__init__()
         self.name = url
+        self._url = url
         self._headers = dict(headers or {})
-        self._timeout = timeout
-        req = urllib.request.Request(url, method="HEAD", headers=self._headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            length = resp.headers.get("Content-Length")
-            if length is None:
-                raise IOError(f"{url} did not report Content-Length")
-            self.size = int(length)
-            self.etag = resp.headers.get("ETag")
+        self.connect_timeout, self.read_timeout = connect_timeout, read_timeout
+        self.retries, self.backoff, self.max_redirects = retries, backoff, max_redirects
+        self._local = threading.local()
+        self._conns: List[object] = []                     # every connection, so close() can reach them all
+        self._conns_lock = threading.Lock()
+        _body, headers_ = self._get(0, 0)
+        content_range = headers_.get("Content-Range", "")
+        self.etag = headers_.get("ETag")
+        try:
+            self.size = int(content_range.rsplit("/", 1)[1])
+        except (IndexError, ValueError):
+            self.size = self._size_from_head()             # servers that omit Content-Range on 206
+
+    def _size_from_head(self) -> int:
+        from urllib.parse import urlsplit
+        parts = urlsplit(self._url)
+        conn = self._connection(parts.scheme, parts.netloc)
+        target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        try:
+            conn.request("HEAD", target, headers=self._headers)
+            resp = conn.getresponse()
+            resp.read()
+            if resp.will_close:
+                self._drop(parts.scheme, parts.netloc)
+        except BaseException:
+            self._drop(parts.scheme, parts.netloc)
+            raise
+        length = resp.getheader("Content-Length")
+        if resp.status != 200 or length is None:
+            raise IOError(f"{self.name} reported neither Content-Range nor Content-Length (HEAD status {resp.status})")
+        return int(length)
+
+    # -------------------------------------------------------------- connections
+    def _connection(self, scheme: str, host: str):
+        import http.client
+        conns = self._local.__dict__.setdefault("conns", {})
+        conn = conns.get((scheme, host))
+        if conn is None:
+            cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            conn = cls(host, timeout=self.connect_timeout)
+            conn.connect()
+            conn.sock.settimeout(self.read_timeout)
+            conns[(scheme, host)] = conn
+            with self._conns_lock:
+                self._conns.append(conn)
+        return conn
+
+    def _drop(self, scheme: str, host: str) -> None:
+        conn = self._local.__dict__.get("conns", {}).pop((scheme, host), None)
+        if conn is not None:
+            conn.close()
+            with self._conns_lock:
+                if conn in self._conns:
+                    self._conns.remove(conn)
+
+    def _request(self, start: int, end: int):
+        """One GET with a Range header, following redirects. Returns (status, headers, body)."""
+        from urllib.parse import urljoin, urlsplit
+        url = self._url
+        origin = urlsplit(self.name).netloc
+        for _ in range(self.max_redirects + 1):
+            parts = urlsplit(url)
+            conn = self._connection(parts.scheme, parts.netloc)
+            target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+            headers = self._headers if parts.netloc == origin else {
+                k: v for k, v in self._headers.items() if k.lower() not in ("authorization", "cookie")}
+            try:
+                conn.request("GET", target, headers=dict(headers, Range=f"bytes={start}-{end}"))
+                resp = conn.getresponse()
+                if resp.status in (301, 302, 303, 307, 308):
+                    resp.read()
+                    url = urljoin(url, resp.getheader("Location", ""))
+                    continue
+                if resp.status == 200:                     # whole file instead of a range: do not download it
+                    self._drop(parts.scheme, parts.netloc)
+                    return resp.status, resp.headers, b""
+                body = resp.read()
+                if resp.will_close:
+                    self._drop(parts.scheme, parts.netloc)
+                if resp.status == 206:
+                    self._url = url                         # skip the redirect next time
+                return resp.status, resp.headers, body
+            except BaseException:
+                self._drop(parts.scheme, parts.netloc)
+                raise
+        raise _NotRetried(f"{self.name}: more than {self.max_redirects} redirects")
+
+    def _get(self, start: int, end: int):
+        import http.client
+        import time
+        last: Exception = IOError("no attempt made")
+        for attempt in range(self.retries + 1):
+            if attempt:
+                time.sleep(self.backoff * 2 ** (attempt - 1))
+            try:
+                status, headers, body = self._request(start, end)
+            except _NotRetried:
+                raise
+            except (OSError, http.client.HTTPException) as e:   # connection reset, timeout, broken response
+                last = e if str(e) else IOError(type(e).__name__)
+                continue
+            if status == 206:
+                return body, headers
+            if status == 200:
+                raise IOError(f"{self.name} ignored the range request (status 200): the server does not "
+                              "support range requests")
+            if status in self._RETRY_STATUS or status >= 500:
+                last = IOError(f"HTTP {status}")
+                continue
+            raise IOError(f"{self.name}: HTTP {status}")
+        raise IOError(f"{self.name}: failed after {self.retries + 1} attempts: {last}")
 
     def _read(self, offset: int, size: int) -> bytes:
-        headers = dict(self._headers, Range=f"bytes={offset}-{offset + size - 1}")
-        req = urllib.request.Request(self.name, headers=headers)
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            if resp.status != 206:
-                raise IOError(f"{self.name} ignored the range request (status {resp.status})")
-            return resp.read()
+        body, _headers = self._get(offset, offset + size - 1)
+        return body
+
+    def close(self) -> None:
+        super().close()
+        with self._conns_lock:
+            conns, self._conns = self._conns, []
+        for conn in conns:
+            conn.close()
 
 
 def open_source(src: Union[str, os.PathLike, BinaryIO, Source]) -> Source:
