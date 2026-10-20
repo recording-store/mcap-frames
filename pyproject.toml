@@ -20,6 +20,11 @@ dependencies = [
 decode = ["av>=12", "pillow>=10"]
 dev = ["mcap-frames[decode]", "pytest>=8"]
 
+[project.urls]
+Repository = "https://github.com/recording-store/mcap-frames"
+Issues = "https://github.com/recording-store/mcap-frames/issues"
+Documentation = "https://github.com/recording-store/mcap-frames#readme"
+
 [project.scripts]
 mcap-frames = "mcap_frames.cli:main"
 
