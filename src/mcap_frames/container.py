@@ -39,6 +39,18 @@ class MessageRef:
     log_time: int
 
 
+class StoredChunk:
+    """A chunk known from an index file: where its records are, how they are compressed."""
+
+    message_index_offsets: Dict[int, int] = {}
+    message_index_length = 0
+
+    def __init__(self, start: int, records_start: int, compression: str, compressed_size: int, uncompressed_size: int):
+        self.chunk_start_offset, self.records_start = start, records_start
+        self.compression = compression
+        self.compressed_size, self.uncompressed_size = compressed_size, uncompressed_size
+
+
 class Container:
     def __init__(self, source: Source, chunk_cache: int = 4):
         self.source = source
@@ -54,6 +66,7 @@ class Container:
         self._message_indexes: Dict[int, Dict[int, np.ndarray]] = {}
         self._chunk_cache: "OrderedDict[int, bytes]" = OrderedDict()
         self._chunk_cache_size = chunk_cache
+        self._stored_has_message_indexes: Optional[bool] = None
 
         tail = source.read(source.size - FOOTER_SIZE - len(MAGIC), FOOTER_SIZE + len(MAGIC))
         summary_start = struct.unpack_from("<Q", tail, 9)[0] if tail[-len(MAGIC):] == MAGIC else 0
@@ -75,6 +88,19 @@ class Container:
         if not self.chunks and (in_chunks is None or in_chunks):
             # messages written outside chunks (ROS 2 'fastwrite'): no index at all, walk the data section once
             self._walk_data_section(summary_start)
+
+    @classmethod
+    def from_stored(cls, source: Source, schemas: Dict[int, Schema], channels: Dict[int, Channel], chunks: List,
+                    recovered: bool, unchunked_messages: int, ignored_tail_bytes: int, has_message_indexes: bool,
+                    chunk_cache: int = 4) -> "Container":
+        """A container rebuilt from an index file: nothing is read from the source."""
+        c = cls.__new__(cls)
+        c.source, c.schemas, c.channels, c.chunks = source, schemas, channels, chunks
+        c.statistics = None
+        c.recovered, c.unchunked_messages, c.ignored_tail_bytes = recovered, unchunked_messages, ignored_tail_bytes
+        c._message_indexes, c._chunk_cache, c._chunk_cache_size = {}, OrderedDict(), chunk_cache
+        c._stored_has_message_indexes = has_message_indexes
+        return c
 
     def _recover(self) -> None:
         """No summary (the recording was cut off, or written without one): walk the file from the start, keep
@@ -150,6 +176,8 @@ class Container:
     @property
     def has_message_indexes(self) -> bool:
         """False when the writer left out MessageIndex records (chunks must then be read to find messages)."""
+        if self._stored_has_message_indexes is not None:
+            return self._stored_has_message_indexes
         return any(c.message_index_offsets for c in self.chunks)
 
     def _index_by_reading_chunks(self) -> None:
@@ -226,6 +254,8 @@ class Container:
         c = self.chunks[k]
         if isinstance(c, _LooseMessages):
             return 0
+        if isinstance(c, StoredChunk):
+            return c.records_start
         return c.chunk_start_offset + 1 + 8 + 8 + 8 + 8 + 4 + 4 + len(c.compression) + 8
 
     def _chunk_records(self, k: int) -> bytes:

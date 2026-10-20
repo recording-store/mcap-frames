@@ -1,7 +1,7 @@
 """Reproducible verification of mcap-frames, on synthetic recordings and on any directory of MCAP files.
 
-    python verify/verify.py synthetic
-    python verify/verify.py dataset DIR [--sample 300 | --all] [--json results.json]
+    python verify/verify.py synthetic [--index]
+    python verify/verify.py dataset DIR [--sample 300 | --all] [--index] [--json results.json]
 
 Reference: every message of a topic is fed to a decoder in order, each packet tagged with its message number, so
 every picture the decoder puts out can be traced back to the message it came from, even when the decoder drops a
@@ -15,6 +15,9 @@ Also counted, for a reader that numbers frames by counting decoded pictures (the
 the n-th picture"): frames for which it returns another message's picture, and frames for which it returns the
 decoder's concealed picture (built on a missing reference) without any error. Synthetic recordings draw each picture's source frame number into the
 picture; that number is checked too, and the health check is compared with what each recording should report.
+
+--index: write an index file for each recording first and verify through it (the recording opened from the index),
+so the results show that a loaded index gives what reading the recording gives.
 
 Needs the decode extra (PyAV, Pillow). Run from a checkout of the repository: synthetic recordings are built with
 tests/fixtures.py.
@@ -230,11 +233,24 @@ def synthetic_cases(work: str):
     return cases
 
 
+def open_recording(path: str, args, work: str) -> mf.Recording:
+    """The recording, opened from a fresh index file when --index is given."""
+    if not args.index:
+        return mf.open(path)
+    index = os.path.join(work, hashlib.md5(path.encode()).hexdigest() + ".frames")
+    with mf.open(path) as rec:
+        rec.save_index(index)
+    rec = mf.open(path, index=index)
+    if rec.index_status != "loaded":
+        raise RuntimeError(f"{path}: index {rec.index_status}")
+    return rec
+
+
 def run_synthetic(args) -> List[TopicResult]:
     results = []
     with tempfile.TemporaryDirectory() as work:
         for name, path, topic, truth, expect, forbid in synthetic_cases(work):
-            with mf.open(path) as rec:
+            with open_recording(path, args, work) as rec:
                 n = len(rec.video(topic))
                 r = verify_topic(rec, topic, None, truth[:n])
             r.file = name
@@ -251,17 +267,18 @@ def run_dataset(args) -> List[TopicResult]:
     paths = sorted(os.path.join(d, f) for d, _s, fs in os.walk(args.dir) for f in fs
                    if f.endswith(".mcap") and not f.startswith("._"))
     results = []
-    for i, path in enumerate(paths):
-        try:
-            rec = mf.open(path)
-        except mf.McapFramesError as e:
-            print(f"  skipped {path}: {e}", file=sys.stderr)
-            continue
-        with rec:
-            rec.scan()
-            for topic in rec.video_topics:
-                results.append(verify_topic(rec, topic, None if args.all else args.sample, seed=i))
-        print(f"  {i + 1}/{len(paths)} {os.path.relpath(path, args.dir)}", file=sys.stderr)
+    with tempfile.TemporaryDirectory() as work:
+        for i, path in enumerate(paths):
+            try:
+                rec = open_recording(path, args, work)
+            except mf.McapFramesError as e:
+                print(f"  skipped {path}: {e}", file=sys.stderr)
+                continue
+            with rec:
+                rec.scan()
+                for topic in rec.video_topics:
+                    results.append(verify_topic(rec, topic, None if args.all else args.sample, seed=i))
+            print(f"  {i + 1}/{len(paths)} {os.path.relpath(path, args.dir)}", file=sys.stderr)
     return results
 
 
@@ -299,6 +316,7 @@ def main() -> int:
     d.add_argument("--all", action="store_true", help="check every frame")
     for p in sub.choices.values():
         p.add_argument("--json", help="write the per-topic results here")
+        p.add_argument("--index", action="store_true", help="verify through index files written first")
     args = ap.parse_args()
     t = time.perf_counter()
     results = run_synthetic(args) if args.mode == "synthetic" else run_dataset(args)

@@ -35,6 +35,9 @@ print(report.summary())
 
 mf.export_frames(v, [10, 500], "out/")        # images + frames.json with a status per frame
 mf.to_mp4(v, "clip.mp4", 300, 900)            # stream copy, no re-encoding
+
+rec.save_index("episode.mcap.frames")         # where every frame is + what a scan finds (no verdicts)
+rec = mf.open("episode.mcap", index="episode.mcap.frames")   # next time: reads only the end of the recording
 ```
 
 ```bash
@@ -42,7 +45,18 @@ mcap-frames info  episode.mcap
 mcap-frames check recordings/ --json report.json      # exit code 1 when a file has errors
 mcap-frames frames episode.mcap --topic /camera/front --index 10 500 --out out/
 mcap-frames mp4   episode.mcap --topic /camera/front --start-index 300 --end-index 900 --out clip.mp4
+mcap-frames index recordings/ --out-dir idx/          # index files; --no-scan: locations only; --check report.json
+mcap-frames check recordings/ --index-dir idx/        # health check from the index files
 ```
+
+## Index files
+
+Opening a recording finds where its frames are, and a scan reads every frame's first bytes (keyframes, parameter
+sets, capture times, `frame_num`). Both can be stored in an index file, so that the next open reads the index file
+and the last 64 KiB of the recording, and nothing else: health checks, keyframe lists and lookups by capture time
+then need no further reading, which matters most on object storage. Index files hold facts, not health-check
+verdicts; an index that does not match its recording is ignored (`rec.index_status` says why). Layout and rules:
+[docs/index-file.md](docs/index-file.md).
 
 ## What the health check reports
 
@@ -116,7 +130,7 @@ including damaged ones, and on the public [ABC-130k](https://huggingface.co/data
 - HTTP sources reuse connections, retry transient failures (connection errors, timeouts, 408 / 429 / 5xx) and
   follow redirects. Authentication is limited to presigned URLs or headers you pass in; proxies from the
   environment are not used. Tested against an S3-compatible object store with presigned GET URLs.
-- Indexes live in memory only; they are rebuilt each time a file is opened.
+- Without an index file, the index is rebuilt each time a file is opened.
 - `frames()` keeps every picture in memory; `iter_frames()` keeps about `workers` runs (keyframe to frame)
   of pictures, so lower `workers` to use less memory.
 - Pictures come back as RGB at full size; convert or resize them yourself.

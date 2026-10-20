@@ -6,6 +6,9 @@ The URL (usually a presigned GET URL) is read from the MF_URL environment variab
 echoing it. It is never printed or saved: presigned URLs carry a signature. The output only shows the host.
 
 --local: a local copy of the same file. Health reports and decoded frames are then compared with it.
+--index: an index file for the recording (written with `mcap-frames index` from a local copy), as a local path; or
+the MF_INDEX_URL environment variable (a presigned URL, never printed either). Opening and checking through it are
+timed and compared with the results without it.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ def snapshot(src):
 
 
 URL = ""          # kept for hiding it in error messages
+INDEX_URL = os.environ.get("MF_INDEX_URL", "")
 
 
 def main() -> int:
@@ -68,6 +72,7 @@ def main() -> int:
     ap.add_argument("--topic", help="video topic to use (default: the first one)")
     ap.add_argument("--frames", type=int, default=30)
     ap.add_argument("--out", help="also write the results as JSON")
+    ap.add_argument("--index", help="index file for the recording (local path); or set MF_INDEX_URL")
     a = ap.parse_args()
 
     url = URL = os.environ.get("MF_URL") or getpass.getpass("URL (input hidden): ").strip()
@@ -100,6 +105,23 @@ def main() -> int:
         res["check"]["matches_local"] = (json.dumps(rep.to_dict()["topics"], sort_keys=True)
                                          == json.dumps(local_rep.to_dict()["topics"], sort_keys=True))
     print(f"  health check: {t:.2f} s, ok={rep.ok}, {res['check']}")
+
+    # 3b. the same through an index file
+    index = a.index or INDEX_URL
+    if index:
+        def with_index():
+            r = mf.open(CountingHttpSource(url), index=index)
+            r.video(topic)
+            return r
+        irec, t = timed(with_index)
+        isrc = irec.source
+        before = snapshot(isrc)
+        irep, t3 = timed(lambda: mf.check(irec))
+        res["with_index"] = {"status": irec.index_status.replace(url, "<url>")[:120], "open_s": round(t, 3),
+                             "check_s": round(t3, 3), "requests_total": isrc.stats.reads,
+                             "MB_total": round(isrc.stats.bytes / 1e6, 2), "check": delta(isrc, before),
+                             "report_matches": irep.to_dict()["topics"] == rep.to_dict()["topics"]}
+        print(f"  with index: {res['with_index']}")
 
     # 4. frames
     try:
@@ -164,6 +186,7 @@ def main() -> int:
 
     text = json.dumps(res, ensure_ascii=False, indent=1)
     assert url not in text and (not parts.query or parts.query not in text)       # never leak the signature
+    assert not INDEX_URL or INDEX_URL not in text
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(text)
@@ -176,5 +199,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as e:                                  # error messages name the URL: hide the signature
         msg = f"{type(e).__name__}: {e}"
-        print("failed:", msg.replace(URL, "<url>") if URL else msg, file=sys.stderr)
+        for secret, label in ((URL, "<url>"), (INDEX_URL, "<index url>")):
+            msg = msg.replace(secret, label) if secret else msg
+        print("failed:", msg, file=sys.stderr)
         raise SystemExit(2)
