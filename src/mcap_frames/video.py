@@ -235,12 +235,15 @@ class VideoStream:
         carriers = np.flatnonzero(s.carries_params[: k + 1])
         if not len(carriers):
             raise FrameNotDecodable(f"{self.topic}: no parameter sets at or before keyframe {k}")
-        return self._track(k, int(carriers[-1]), n)
+        known = s.params is not None and s.params[k] >= 0
+        return self._track(k, int(carriers[-1]), n, s.param_sets[int(s.params[k])] if known else None)
 
-    def _track(self, k: int, params_at: int, n: int) -> _Located:
+    def _track(self, k: int, params_at: int, n: int, params: Optional[bytes] = None) -> _Located:
+        """``params``: the parameter sets for keyframe k when already known (from a scan), so the frame that
+        carried them need not be read again."""
         state, parse, _avail = self._parser()
         if params_at < k:
-            parse(self._payloads([params_at])[0].data, state)
+            parse(params if params is not None else self._payloads([params_at])[0].data, state)
         prefix_needed = False
         result: Optional[bool] = True
         if self.codec == "h264":

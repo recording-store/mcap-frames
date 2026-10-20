@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -25,6 +25,8 @@ class ScanResult:
     params_first_seen: Optional[int]  # first frame that carried parameter sets
     reference_gaps: List[Tuple[int, int, int, int]] = field(default_factory=list)
     # H.264: (frame, expected frame_num, frame_num found, max_frame_num) where references go missing
+    params: Optional[np.ndarray] = None   # int32 per frame: at keyframes, the parameter sets decoding from there
+    param_sets: List[bytes] = field(default_factory=list)   # needs (row in param_sets); -1 elsewhere or unknown
 
     def __len__(self) -> int:
         return len(self.keyframe)
@@ -53,6 +55,15 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
     gaps_allowed: Optional[bool] = None
     first_params: Optional[int] = None
     ref_gaps: List[Tuple[int, int, int, int]] = []
+    params = np.full(n, -1, np.int32)
+    param_sets: List[bytes] = []
+    param_rows: Dict[bytes, int] = {}
+
+    def remember(i: int, prefix: bytes) -> None:          # distinct parameter sets, stored once
+        if prefix:
+            params[i] = param_rows.setdefault(prefix, len(param_sets))
+            if params[i] == len(param_sets):
+                param_sets.append(prefix)
 
     if codec == "h264":
         state, tracker, started = h264.H264State(), h264.FrameNumTracker(), False
@@ -75,6 +86,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
                 if h264.params_available(u, state):
                     r = tracker.start(u)
                     started = True
+                    remember(i, state.param_prefix(u.pps_id))
                 else:
                     tracker.state, r = False, False
             elif not started:
@@ -101,6 +113,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
             if u.keyframe and h265.params_available(u, state5):
                 started = True
                 decodable[i] = DECODABLE
+                remember(i, state5.param_prefix())
             elif started:
                 decodable[i] = UNKNOWN                    # not inferred for H.265 yet
     else:                                                 # still images: every frame stands alone
@@ -110,4 +123,4 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
             keyframe[i] = carries[i] = ok
             decodable[i] = DECODABLE if ok else NOT_DECODABLE
     return ScanResult(codec, keyframe, carries, decodable, b_frames, stamps, gaps_allowed, first_params,
-                      ref_gaps)
+                      ref_gaps, params, param_sets)
