@@ -66,6 +66,22 @@ def encode_h264(frames: int, gop: int = 10, bframes: int = 0) -> List[Unit]:
     return [Unit(int(p.pts), bytes(p), bool(p.is_keyframe)) for p in packets]
 
 
+def encode_h265(frames: int, gop: int = 10, bframes: int = 0) -> List[Unit]:
+    """libx265; with ``bframes`` the stream reorders pictures (message order differs from picture order)."""
+    ctx = av.CodecContext.create("libx265", "w")
+    ctx.width, ctx.height, ctx.pix_fmt = W, H, "yuv420p"
+    ctx.framerate, ctx.time_base = FPS, Fraction(1, FPS)
+    ctx.options = {"preset": "ultrafast", "crf": "28",
+                   "x265-params": f"keyint={gop}:min-keyint={gop}:scenecut=0:bframes={bframes}:open-gop=0:log-level=error"}
+    packets = []
+    for i in range(frames):
+        fr = av.VideoFrame.from_ndarray(draw(i), format="rgb24").reformat(format="yuv420p")
+        fr.pts = i
+        packets += list(ctx.encode(fr))
+    packets += list(ctx.encode(None))
+    return [Unit(int(p.pts), bytes(p), bool(p.is_keyframe)) for p in packets]
+
+
 def encode_jpeg(frames: int) -> List[Unit]:
     from PIL import Image
     out = []
@@ -236,10 +252,10 @@ def drop(units: List[Unit], numbers: Iterable[int]) -> List[Unit]:
     return [u for u in units if u.number not in gone]
 
 
-def sequential_pictures(units: Sequence[Unit]) -> Dict[int, bytes]:
+def sequential_pictures(units: Sequence[Unit], codec: str = "h264") -> Dict[int, bytes]:
     """Decode a complete stream in order: {source number: md5 of the RGB picture} (the reference answer)."""
     import hashlib
-    ctx = av.CodecContext.create("h264", "r")
+    ctx = av.CodecContext.create({"h264": "h264", "h265": "hevc"}[codec], "r")
     pics = []
     for u in units:
         pics += list(ctx.decode(av.Packet(u.data)))

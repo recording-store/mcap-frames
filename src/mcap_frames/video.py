@@ -264,8 +264,12 @@ class VideoStream:
                     raise FrameNotDecodable(f"{self.topic}: frame {n} depends on a frame missing before frame {i}")
             prefix = state.param_prefix(pps_id) if prefix_needed else b""
         else:
-            u = h265.parse_unit(self._payloads([k])[0].data, state)
+            payloads = self._payloads(range(k, n + 1))
+            u = h265.parse_unit(payloads[0].data, state)
             prefix = b"" if (u.has_vps and u.has_sps and u.has_pps) else state.param_prefix()
+            for p in payloads[1:]:                         # B-frames reorder pictures: refuse, as for H.264
+                if h265.parse_unit(p.data, state).slice_type == h265.SLICE_B:
+                    raise UnsupportedStream(f"{self.topic} has B-frames: frame numbers do not match picture order")
             result = None if n > k else True
         return _Located(k, prefix, result)
 

@@ -110,6 +110,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
             carries[i] = u.has_vps and u.has_sps and u.has_pps
             if carries[i] and first_params is None:
                 first_params = i
+            b_frames += u.slice_type == h265.SLICE_B
             if u.keyframe and h265.params_available(u, state5):
                 started = True
                 decodable[i] = DECODABLE

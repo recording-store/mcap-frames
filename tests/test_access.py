@@ -195,3 +195,36 @@ def test_requests_larger_than_the_payload_cache(tmp_path, monkeypatch, clean_uni
         for f in v.frames([3, 19, 58, 59, 119]):
             assert md5(f.image) == reference[f.index]
         assert len(v._payloads(range(0, 40))) == 40
+
+
+needs_x265 = pytest.mark.skipif("libx265" not in __import__("av").codecs_available, reason="no libx265 encoder")
+
+
+@needs_x265
+def test_h265_frames_match_sequential_decode(tmp_path):
+    units = fx.encode_h265(40, gop=10)
+    reference = fx.sequential_pictures(units, "h265")
+    w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", units, fmt="h265")])
+    with mf.open(w.path) as rec:
+        v = rec.video("/cam")
+        assert v.codec == "h265"
+        for f in v.frames([0, 9, 13, 39]):
+            assert fx.read_number(f.image) == f.index and md5(f.image) == reference[f.index]
+    rep = mf.check(w.path)
+    assert rep.ok and "b-frames" not in {i.code for i in rep.topics["/cam"].issues}
+
+
+@needs_x265
+def test_h265_b_frames_are_refused(tmp_path):
+    units = fx.encode_h265(40, gop=10, bframes=2)
+    assert [u.number for u in units[:4]] != [0, 1, 2, 3]          # picture order differs from message order
+    w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", units, fmt="h265")])
+    with mf.open(w.path) as rec:                                  # without a scan: found on the way to frame n
+        with pytest.raises(mf.UnsupportedStream, match="B-frames"):
+            rec.video("/cam").frame(13)
+    with mf.open(w.path) as rec:                                  # with a scan
+        rec.scan()
+        with pytest.raises(mf.UnsupportedStream, match="B-frames"):
+            rec.video("/cam").frame(13)
+    rep = mf.check(w.path)
+    assert not rep.ok and "b-frames" in {i.code for i in rep.topics["/cam"].issues}
