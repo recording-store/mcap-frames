@@ -228,3 +228,16 @@ def test_h265_b_frames_are_refused(tmp_path):
             rec.video("/cam").frame(13)
     rep = mf.check(w.path)
     assert not rep.ok and "b-frames" in {i.code for i in rep.topics["/cam"].issues}
+
+
+def test_damaged_image_is_not_decodable(tmp_path):
+    units = fx.encode_jpeg(10)
+    units[4] = fx.Unit(4, units[4].data[: len(units[4].data) // 3], True)    # cut off: not a whole JPEG
+    w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", units, kind="ros2", fmt="jpeg")])
+    with mf.open(w.path) as rec:
+        v = rec.video("/cam")
+        with pytest.raises(mf.FrameNotDecodable):
+            v.frame(4)
+        assert [f.index for f in v.frames([3, 4, 5], on_error="skip")] == [3, 5]
+        rows = mf.export_frames(v, [3, 4], tmp_path / "out")
+    assert [r["status"] for r in rows] == ["ok", "not_decodable"]

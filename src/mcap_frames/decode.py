@@ -71,5 +71,8 @@ def decode_image(data: bytes) -> np.ndarray:
         from PIL import Image
     except ImportError as e:                                        # pragma: no cover
         raise ImportError("decoding images needs Pillow: pip install 'mcap-frames[decode]'") from e
-    with Image.open(io.BytesIO(data)) as im:
-        return np.asarray(im.convert("RGB"))
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            return np.asarray(im.convert("RGB"))
+    except (OSError, ValueError, SyntaxError) as e:                 # unreadable, truncated or damaged image
+        raise FrameNotDecodable(f"image could not be decoded: {e}") from e

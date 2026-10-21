@@ -44,9 +44,12 @@ class ScanResult:
 
 
 def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
-                  refetch: Optional[Callable[[int], Payload]] = None) -> ScanResult:
+                  refetch: Optional[Callable[[int], Payload]] = None, state=None) -> ScanResult:
     """``payloads`` may be truncated (only the head of each message); a frame whose head ends before the
-    picture data starts (for example a large SEI) is read again in full through ``refetch``."""
+    picture data starts (for example a large SEI) is read again in full through ``refetch``.
+
+    ``state``: parameter sets already known (an H264State / H265State), when the payloads start in the middle
+    of a stream."""
     keyframe = np.zeros(n, bool)
     carries = np.zeros(n, bool)
     decodable = np.full(n, NOT_DECODABLE, np.int8)
@@ -66,7 +69,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
                 param_sets.append(prefix)
 
     if codec == "h264":
-        state, tracker, started = h264.H264State(), h264.FrameNumTracker(), False
+        state, tracker, started = state or h264.H264State(), h264.FrameNumTracker(), False
         for i, p in enumerate(payloads):
             stamps[i] = -1 if p.stamp_ns is None else p.stamp_ns
             if not p.data:
@@ -97,7 +100,7 @@ def scan_payloads(codec: str, payloads: Iterable[Payload], n: int,
                     ref_gaps.append((i, *tracker.gap))
             decodable[i] = DECODABLE if r is True else (UNKNOWN if r is None else NOT_DECODABLE)
     elif codec == "h265":
-        state5, started = h265.H265State(), False
+        state5, started = state or h265.H265State(), False
         for i, p in enumerate(payloads):
             stamps[i] = -1 if p.stamp_ns is None else p.stamp_ns
             if not p.data:

@@ -196,6 +196,11 @@ class VideoStream:
         """Keyframe to start from, parameter-set prefix for it, and whether frame n's references are complete."""
         if self._scan is not None:
             return self._locate_with_scan(n)
+        k, p_at = self._keyframe_before(n)
+        return self._track(k, p_at, n)
+
+    def _keyframe_before(self, n: int) -> Tuple[int, int]:
+        """(nearest keyframe at or before n, frame that carried its parameter sets), from the frames' headers."""
         state, parse, _avail = self._parser()
         # 1. walk back to the nearest keyframe
         k, window = None, 16
@@ -222,7 +227,23 @@ class VideoStream:
             if p_at == 0:
                 raise FrameNotDecodable(f"{self.topic}: no parameter sets at or before keyframe {k}")
             p_at -= 1
-        return self._track(k, p_at, n)
+        return k, p_at
+
+    def _scan_range(self, k: int, params_at: int, hi: int) -> scanmod.ScanResult:
+        """The headers of frames k..hi only (k a keyframe, its parameter sets at ``params_at``): what a scan
+        finds for them, without reading the rest of the topic."""
+        state, parse, _avail = self._parser()
+        if params_at < k:
+            parse(self._payloads([params_at])[0].data, state)
+        refs = self._frame_index.refs[k:hi + 1]
+
+        def heads():
+            for start in range(0, len(refs), _SCAN_BATCH):
+                for data, truncated in self._container.read_message_heads(refs[start:start + _SCAN_BATCH], _SCAN_HEAD):
+                    yield self._extract(data, truncated)
+
+        return scanmod.scan_payloads(self.codec, heads(), len(refs), refetch=lambda i: self._payloads([k + i])[0],
+                                     state=state)
 
     def _locate_with_scan(self, n: int) -> _Located:
         s = self._scan
