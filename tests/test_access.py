@@ -241,3 +241,15 @@ def test_damaged_image_is_not_decodable(tmp_path):
         assert [f.index for f in v.frames([3, 4, 5], on_error="skip")] == [3, 5]
         rows = mf.export_frames(v, [3, 4], tmp_path / "out")
     assert [r["status"] for r in rows] == ["ok", "not_decodable"]
+
+
+def test_compressed_depth_is_refused_clearly(tmp_path):
+    units = fx.encode_jpeg(3)
+    depth = [fx.Unit(u.number, bytes(12) + u.data, True) for u in units]      # 12-byte config header first
+    w = fx.write_recording(str(tmp_path / "r.mcap"),
+                           [fx.Camera("/depth", depth, kind="ros2", fmt="16UC1; compressedDepth png")])
+    with mf.open(w.path) as rec:
+        with pytest.raises(mf.UnsupportedStream, match="compressedDepth"):
+            rec.video("/depth").codec
+    issue = {i.code: i for i in mf.check(w.path).topics["/depth"].issues}["unreadable"]
+    assert "compressedDepth" in issue.message

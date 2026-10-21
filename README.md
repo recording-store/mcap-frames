@@ -126,6 +126,7 @@ including damaged ones, and on the public [ABC-130k](https://huggingface.co/data
   gaps, a damaged frame is only detected when the decoder drops it; a decoder that conceals the damage
   returns a picture.
 - Streams with B-frames are refused (message order differs from picture order), for H.264 and H.265.
+- ROS `compressedDepth` images (a header before the PNG) are not supported.
 - When a topic has several channels, only the first one is used.
 - HTTP sources reuse connections, retry transient failures (connection errors, timeouts, 408 / 429 / 5xx) and
   follow redirects. Authentication is limited to presigned URLs or headers you pass in; proxies from the

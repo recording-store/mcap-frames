@@ -104,6 +104,9 @@ class VideoStream:
                 raise UnsupportedStream(f"{self.topic} has no messages")
             for i in range(min(len(self), 64)):
                 p = self._payloads([i])[0]
+                if "compresseddepth" in p.format.lower():
+                    raise UnsupportedStream(f"{self.topic}: compressedDepth images (ROS depth image transport, a "
+                                            "header before the PNG) are not supported")
                 codec = codec_from_format(p.format) or sniff_codec(p.data)
                 if codec:
                     self._codec = codec
