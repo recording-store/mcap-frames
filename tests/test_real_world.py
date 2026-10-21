@@ -125,3 +125,20 @@ def test_unchunked_recording(tmp_path, units, reference, cut):
             assert md5(f.image) == reference[f.index]
     codes = {i.code for i in mf.check(path).topics["/cam/a"].issues}
     assert "unchunked" in codes and ("truncated" in codes) == bool(cut)
+
+
+def test_messages_outside_chunks_in_a_chunked_file(tmp_path, units, reference):
+    """A writer that switched from chunks to plain messages and back: the summary counts every message, the
+    chunks hold only some; the rest are found by walking the data section once."""
+    w = fx.write_recording(str(tmp_path / "r.mcap"), [fx.Camera("/cam", units)], outside_chunks=range(40, 45))
+    with mf.open(w.path) as rec:
+        v = rec.video("/cam")
+        assert len(v) == len(units)
+        for f in v.frames([39, 40, 42, 44, 45, 89]):
+            assert md5(f.image) == reference[f.index]
+        rec.save_index(str(tmp_path / "r.frames"))
+    codes = {i.code for i in mf.check(w.path).topics["/cam"].issues}
+    assert "unchunked" in codes
+    with mf.open(w.path, index=str(tmp_path / "r.frames")) as rec:
+        assert rec.index_status == "loaded" and len(rec.video("/cam")) == len(units)
+        assert md5(rec.video("/cam").frame(42).image) == reference[42]

@@ -193,8 +193,11 @@ class Written:
 
 
 def write_recording(path: str, cameras: Sequence[Camera], compression: str = "zstd", chunk_size: int = 64 * 1024,
-                    with_state_topic: bool = True, message_index: bool = True, chunked: bool = True) -> Written:
-    """``chunked=False`` writes messages straight into the data section, like ROS 2's ``fastwrite`` preset."""
+                    with_state_topic: bool = True, message_index: bool = True, chunked: bool = True,
+                    outside_chunks: Iterable[int] = ()) -> Written:
+    """``chunked=False`` writes messages straight into the data section, like ROS 2's ``fastwrite`` preset.
+    ``outside_chunks``: source frame numbers written outside chunks in an otherwise chunked file."""
+    outside = set(outside_chunks)
     events = []                                      # (write position, log_time, topic, sequence, unit)
     for c in cameras:
         times = c.times_ns or [T0 + u.number * 1_000_000_000 // FPS for u in c.units]
@@ -238,11 +241,16 @@ def write_recording(path: str, cameras: Sequence[Camera], compression: str = "zs
                 w.add_message(state_id, log_time=t, publish_time=t, data=u, sequence=0)
                 continue
             cid, c = ids[topic]
+            if u.number in outside:                      # the writer has no public switch: drop its chunk builder
+                w._Writer__finalize_chunk()              # for this one message (test data only)
+                builder, w._Writer__chunk_builder = w._Writer__chunk_builder, None
             stamp = c.stamps_ns[seq] if c.stamps_ns else t
             data = (pb_compressed_video(stamp, u.data, c.fmt) if c.kind == "protobuf"
                     else pb_compressed_image(None, u.data, c.fmt) if c.kind == "pb_image"
                     else cdr_compressed_image(stamp, u.data, c.fmt))
             w.add_message(cid, log_time=t, publish_time=t, data=data, sequence=seq)
+            if u.number in outside:
+                w._Writer__chunk_builder = builder
         w.finish()
     return out
 

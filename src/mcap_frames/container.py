@@ -67,12 +67,15 @@ class Container:
         self._chunk_cache: "OrderedDict[int, bytes]" = OrderedDict()
         self._chunk_cache_size = chunk_cache
         self._stored_has_message_indexes: Optional[bool] = None
+        self._summary_start = 0
+        self._walked = False                 # the data section was walked for messages outside chunks
 
         tail = source.read(source.size - FOOTER_SIZE - len(MAGIC), FOOTER_SIZE + len(MAGIC))
         summary_start = struct.unpack_from("<Q", tail, 9)[0] if tail[-len(MAGIC):] == MAGIC else 0
         if summary_start == 0:
             self._recover()
             return
+        self._summary_start = summary_start
         summary = source.read(summary_start, source.size - len(MAGIC) - summary_start)   # summary + footer
         for rec in _records(summary):
             if isinstance(rec, Schema):
@@ -100,6 +103,7 @@ class Container:
         c.recovered, c.unchunked_messages, c.ignored_tail_bytes = recovered, unchunked_messages, ignored_tail_bytes
         c._message_indexes, c._chunk_cache, c._chunk_cache_size = {}, OrderedDict(), chunk_cache
         c._stored_has_message_indexes = has_message_indexes
+        c._summary_start, c._walked = 0, True              # the index already holds every message it covers
         return c
 
     def _recover(self) -> None:
@@ -112,19 +116,21 @@ class Container:
         self.recovered = True
         self._index_by_reading_chunks()
 
-    def _walk_data_section(self, end: int) -> Tuple[int, bool]:
+    def _walk_data_section(self, end: int, collect_chunks: bool = True) -> Tuple[int, bool]:
         """Walk the top-level records from the start of the file up to ``end``. Collects chunks (as ChunkIndex),
         schema and channel definitions, and messages written outside chunks (ROS 2 'fastwrite' and other
         unchunked writers). Only record headers are needed: the bytes of large messages are skipped.
 
-        Returns (position reached, whether a DataEnd / Footer record ended the walk)."""
+        Returns (position reached, whether a DataEnd / Footer record ended the walk). ``collect_chunks`` False:
+        the chunks are already known from the summary, only messages outside them are collected."""
+        self._walked = True
         reader = _ReadAhead(self.source)                    # walking reads (nearly) the whole file: read ahead
         try:
-            return self._walk(reader.get, end)
+            return self._walk(reader.get, end, collect_chunks)
         finally:
             reader.close()
 
-    def _walk(self, get, end: int) -> Tuple[int, bool]:
+    def _walk(self, get, end: int, collect_chunks: bool = True) -> Tuple[int, bool]:
 
         loose: Dict[int, List[Tuple[int, int]]] = {}          # channel -> [(log_time, file offset)] outside chunks
         loose_ends: List[int] = []
@@ -135,7 +141,7 @@ class Container:
             if rec_end > end:                               # the record the recorder was writing when it stopped
                 self._add_loose(loose, loose_ends)
                 return pos, False
-            if op == OP_CHUNK:
+            if op == OP_CHUNK and collect_chunks:
                 start, stop, usize, _crc, clen = struct.unpack("<QQQII", get(pos + 9, 32))
                 compression = get(pos + 41, clen).decode()
                 rlen = struct.unpack("<Q", get(pos + 41 + clen, 8))[0]
@@ -241,6 +247,12 @@ class Container:
             bounds = np.where(nxt < len(starts), starts[np.minimum(nxt, len(starts) - 1)], end)
             out.extend(MessageRef(k, int(o), int(b), int(t)) for (t, o), b in zip(mine, bounds))
         out.sort(key=self._file_order)
+        expected = self.statistics.channel_message_counts.get(channel_id) if self.statistics else None
+        if expected is not None and len(out) < expected and not self._walked:
+            # The summary counts more messages than the chunks hold: some were written outside chunks (a writer
+            # that switched modes). Find them once, then answer again with them included.
+            self._walk_data_section(self._summary_start, collect_chunks=False)
+            return self.refs(channel_id)
         return out
 
     def _file_order(self, r: MessageRef) -> Tuple[int, int]:

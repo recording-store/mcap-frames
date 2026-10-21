@@ -227,3 +227,27 @@ def test_index_file_is_plain_npz(tmp_path, units):
     assert meta["format"] == "mcap-frames-index" and meta["topics"][0]["frames"] == len(units)
     assert a["t0/flags"].dtype == np.uint8 and len(a["t0/flags"]) == len(units)
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]          # written atomically
+
+
+def test_topics_missing_from_the_index_are_read_from_the_recording(tmp_path, units):
+    """An index that lacks a topic (written by an older version, say): that topic is read from the recording,
+    and scanning it together with indexed topics reads each through its own container."""
+    path = str(tmp_path / "r.mcap")
+    b_units = [fx.Unit(u.number + 1000, u.data, u.key) for u in fx.drop(units, [40])]   # its own frame numbers
+    fx.write_recording(path, [fx.Camera("/a", units), fx.Camera("/b", b_units)], outside_chunks=range(1050, 1055))
+    index = path + ".frames"
+    with mf.open(path) as rec:
+        rec.save_index(index, scan=False)       # /b's messages outside chunks give it a chunk table of its own
+
+    def keep_only_a(a):
+        meta = json.loads(str(a["meta"]))
+        meta["topics"] = [t for t in meta["topics"] if t["topic"] == "/a"]
+        a["meta"] = np.array(json.dumps(meta))
+
+    rewrite(index, keep_only_a)
+    with mf.open(path) as direct, mf.open(path, index=index) as rec:
+        assert rec.index_status == "loaded" and rec.video_topics == ["/a"]
+        rec.scan(["/a", "/b"])
+        for t in ("/a", "/b"):
+            assert scan_fields(rec.video(t)) == scan_fields(direct.video(t)), t
+        assert topics_of(mf.check(rec, ["/a", "/b"])) == topics_of(mf.check(direct, ["/a", "/b"]))

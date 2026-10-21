@@ -437,13 +437,21 @@ class VideoStream:
 
 
 def scan_streams(streams: Sequence["VideoStream"]) -> None:
-    """Scan several streams of one container in a single pass over the file.
+    """Scan several streams in a single pass over the file.
 
     Messages of all streams are visited in file order, so every chunk is read (and decompressed) once, no
-    matter how many cameras share it; only the head of each message is kept."""
-    todo = [v for v in streams if v._scan is None]
-    if not todo:
-        return
+    matter how many cameras share it; only the head of each message is kept. Streams on different containers
+    (a recording opened from an index file that lacks some topic) are scanned container by container, since a
+    message's chunk number only means something in its own container."""
+    by_container: Dict[int, List["VideoStream"]] = {}
+    for v in streams:
+        if v._scan is None:
+            by_container.setdefault(id(v._container), []).append(v)
+    for group in by_container.values():
+        _scan_one_container(group)
+
+
+def _scan_one_container(todo: List["VideoStream"]) -> None:
     container = todo[0]._container
     entries = [(v, i, r) for v in todo for i, r in enumerate(v._frame_index.refs)]
     entries.sort(key=lambda e: (e[2].chunk, e[2].offset))
