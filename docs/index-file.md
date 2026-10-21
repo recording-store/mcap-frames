@@ -1,6 +1,6 @@
 # Index files
 
-Added in 0.2 (`mcap_frames/indexfile.py`).
+Added in 0.1.0 (`mcap_frames/indexfile.py`).
 
 Opening a recording builds a frame index in memory: where every frame of every video topic is, and, after a
 scan, which frames are keyframes, which can be decoded and when each was captured. Building it costs one small
@@ -95,7 +95,7 @@ small header parser. All integers little-endian.
 {
   "format": "mcap-frames-index",
   "version": 1,
-  "created_by": "mcap-frames 0.2.0",
+  "created_by": "mcap-frames 0.1.0",
   "file": {"size": 1073741824, "tail_sha256": "…", "etag": "\"…\"", "sha256": null},
   "container": {"recovered": false, "unchunked_messages": 0, "ignored_tail_bytes": 0},
   "schemas": [{"id": 1, "name": "sensor_msgs/msg/CompressedImage", "encoding": "ros2msg", "data_b64": "…"}],

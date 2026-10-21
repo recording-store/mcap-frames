@@ -26,7 +26,7 @@ jobs:
         python: ["3.10", "3.11", "3.12", "3.13"]
         experimental: [false]
         include:
-          # macOS runners are billed at a higher rate while the repository is private: oldest and newest only.
+          # macOS: oldest and newest supported Python only.
           - {os: macos-latest, python: "3.10", experimental: false}
           - {os: macos-latest, python: "3.13", experimental: false}
           - {os: windows-latest, python: "3.12", experimental: true}

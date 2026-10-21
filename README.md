@@ -5,9 +5,10 @@ Frame-accurate video access for MCAP files (community project, not affiliated wi
 Frame *n* is always the *n*-th message of the channel, in the order the messages were written (the order a
 decoder needs). Getting it decodes from the nearest keyframe and reads only the chunks (or, when chunks are
 uncompressed, the byte ranges) that hold those frames, using the file's own `ChunkIndex` / `MessageIndex`
-records; nothing is stored next to the file. Frame numbers never depend on what a decoder manages to output,
-so they do not shift when a stream is damaged: for H.264, a frame that depends on a missing picture raises
-`FrameNotDecodable` (inferred from `frame_num`, without decoding).
+records; nothing has to be stored next to the file
+([index files](https://github.com/recording-store/mcap-frames/blob/main/docs/index-file.md) are optional). Frame numbers
+never depend on what a decoder manages to output, so they do not shift when a stream is damaged: for H.264, a
+frame that depends on a missing picture raises `FrameNotDecodable` (inferred from `frame_num`, without decoding).
 
 ```bash
 pip install "mcap-frames[decode]"     # [decode] adds PyAV and Pillow; indexing and checks work without it
@@ -56,7 +57,7 @@ sets, capture times, `frame_num`). Both can be stored in an index file, so that 
 and the last 64 KiB of the recording, and nothing else: health checks, keyframe lists and lookups by capture time
 then need no further reading, which matters most on object storage. Index files hold facts, not health-check
 verdicts; an index that does not match its recording is ignored (`rec.index_status` says why). Layout and rules:
-[docs/index-file.md](docs/index-file.md).
+[docs/index-file.md](https://github.com/recording-store/mcap-frames/blob/main/docs/index-file.md).
 
 ## What the health check reports
 
@@ -119,8 +120,10 @@ python verify/verify.py dataset abc130k/data      # 40 episodes, 3.4 GB, ~15 min
 
 ## Status and limitations
 
-0.1 development version; the API may still change. Verified with `verify/verify.py` on synthetic streams,
-including damaged ones, and on the public [ABC-130k](https://huggingface.co/datasets/Voxel51/ABC-130k) subset.
+0.1.0 is the first release; the API may still change before 1.0
+([changelog](https://github.com/recording-store/mcap-frames/blob/main/CHANGELOG.md)). Verified with
+`verify/verify.py` on synthetic streams, including damaged ones, and on the public
+[ABC-130k](https://huggingface.co/datasets/Voxel51/ABC-130k) subset.
 
 - Missing references are inferred for H.264 only. For H.265, and for H.264 streams that allow `frame_num`
   gaps, a damaged frame is only detected when the decoder drops it; a decoder that conceals the damage

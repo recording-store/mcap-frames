@@ -17,7 +17,7 @@ from mcap_frames.recording import Recording
 from mcap_frames.source import FileSource, HttpSource, Source
 from mcap_frames.video import EncodedRun, Frame, VideoStream
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 open = _recording.open        # mf.open(...); left out of __all__ so that ``import *`` keeps the builtin open
 __all__ = [

@@ -4,12 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcap-frames"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Frame-accurate video access for MCAP files"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+authors = [{name = "recording-store"}]
 requires-python = ">=3.10"
+keywords = ["mcap", "ros2", "robotics", "video", "h264", "h265", "dataset"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "mcap>=1.1",
     "numpy>=1.24",
@@ -27,6 +42,9 @@ Documentation = "https://github.com/recording-store/mcap-frames#readme"
 
 [project.scripts]
 mcap-frames = "mcap_frames.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "mcap_frames.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
